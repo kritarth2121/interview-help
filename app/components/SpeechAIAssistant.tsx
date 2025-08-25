@@ -353,7 +353,7 @@ export default function SpeechAIAssistant() {
                     <CardContent className="p-6 text-center">
                         <h2 className="text-xl font-semibold mb-4">Speech Recognition Not Supported</h2>
                         <p className="text-gray-600">
-                            Your browser doesn't support speech recognition. Please use Chrome, Edge, or Safari.
+                            Your browser doesnt support speech recognition. Please use Chrome, Edge, or Safari.
                         </p>
                     </CardContent>
                 </Card>
@@ -368,7 +368,7 @@ export default function SpeechAIAssistant() {
             <div className="max-w-4xl mx-auto space-y-6">
                 <div className="text-center">
                     <h1 className="text-3xl font-bold text-gray-900 mb-2">AI Speech Assistant</h1>
-                    <p className="text-gray-600">Speak naturally, and I'll respond to your last 20 words</p>
+                    <p className="text-gray-600">Speak naturally, and Ill respond to your last 20 words</p>
                 </div>
 
                 {/* Error Display */}
