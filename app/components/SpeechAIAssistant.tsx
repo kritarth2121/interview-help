@@ -4,9 +4,9 @@ import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Mic, MicOff, MessageSquare, Volume2 } from "lucide-react";
+import { Mic, MicOff, MessageSquare } from "lucide-react";
 
-// Complete SpeechRecognition interface
+/* ====================== Web Speech API Types ====================== */
 interface SpeechRecognition extends EventTarget {
     continuous: boolean;
     interimResults: boolean;
@@ -29,35 +29,29 @@ interface SpeechRecognition extends EventTarget {
     onaudiostart: ((this: SpeechRecognition, ev: Event) => any) | null;
     onaudioend: ((this: SpeechRecognition, ev: Event) => any) | null;
 }
-
 interface SpeechRecognitionErrorEvent extends Event {
     error: string;
-    message: string;
+    message?: string;
 }
-
 interface SpeechRecognitionEvent extends Event {
     results: SpeechRecognitionResultList;
     resultIndex: number;
 }
-
 interface SpeechRecognitionResultList {
     readonly length: number;
     item(index: number): SpeechRecognitionResult;
     [index: number]: SpeechRecognitionResult;
 }
-
 interface SpeechRecognitionResult {
     readonly length: number;
     item(index: number): SpeechRecognitionAlternative;
     [index: number]: SpeechRecognitionAlternative;
     isFinal: boolean;
 }
-
 interface SpeechRecognitionAlternative {
     transcript: string;
     confidence: number;
 }
-
 interface SpeechGrammarList {
     readonly length: number;
     item(index: number): SpeechGrammar;
@@ -65,219 +59,250 @@ interface SpeechGrammarList {
     addFromURI(src: string, weight?: number): void;
     addFromString(string: string, weight?: number): void;
 }
-
 interface SpeechGrammar {
     src: string;
     weight: number;
 }
-
 declare global {
     interface Window {
-        SpeechRecognition: new () => SpeechRecognition;
-        webkitSpeechRecognition: new () => SpeechRecognition;
+        SpeechRecognition: { new (): SpeechRecognition };
+        webkitSpeechRecognition: { new (): SpeechRecognition };
     }
 }
 
+/* =========================== Component ============================ */
 export default function SpeechAIAssistant() {
     const [isListening, setIsListening] = useState(false);
-    const [transcript, setTranscript] = useState("");
-    const [words, setWords] = useState<string[]>([]);
+    const [isSupported, setIsSupported] = useState(false);
+
+    const [transcript, setTranscript] = useState(""); // full final transcript
+    const [interimTranscript, setInterimTranscript] = useState(""); // live interim
+    const [words, setWords] = useState<string[]>([]); // final words list
+
     const [aiResponse, setAiResponse] = useState("");
     const [isGenerating, setIsGenerating] = useState(false);
-    const [isSupported, setIsSupported] = useState(false);
     const [apiError, setApiError] = useState<string | null>(null);
 
     const recognitionRef = useRef<SpeechRecognition | null>(null);
 
+    // Autosend machinery
+    const autoTickRef = useRef<number | null>(null);
+    const lastSentIndexRef = useRef(0);
+
+    const wordsRef = useRef<string[]>([]);
     useEffect(() => {
-        // Check if speech recognition is supported
-        if (typeof window !== "undefined") {
-            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            if (SpeechRecognition) {
-                setIsSupported(true);
-                recognitionRef.current = new SpeechRecognition();
-                if (recognitionRef.current) {
-                    const recognition = recognitionRef.current;
-                    recognition.continuous = true;
-                    recognition.interimResults = true;
-                    recognition.lang = "en-IN"; // English (India)
+        wordsRef.current = words;
+    }, [words]);
 
-                    recognition.onstart = () => {
-                        console.log("Speech recognition started");
-                    };
+    const isGeneratingRef = useRef(false);
+    useEffect(() => {
+        isGeneratingRef.current = isGenerating;
+    }, [isGenerating]);
 
-                    recognition.onresult = (event: SpeechRecognitionEvent) => {
-                        let finalTranscript = "";
+    // mirror interim transcript for autosend fallback
+    const interimRef = useRef("");
+    useEffect(() => {
+        interimRef.current = interimTranscript;
+    }, [interimTranscript]);
 
-                        for (let i = event.resultIndex; i < event.results.length; i++) {
-                            const transcript = event.results[i][0].transcript;
-                            if (event.results[i].isFinal) {
-                                finalTranscript += transcript + " ";
-                            }
-                        }
+    // watchdog timer id for long-running generations
+    const genWatchdogRef = useRef<number | null>(null);
 
-                        if (finalTranscript) {
-                            setTranscript((prev) => prev + finalTranscript);
-                            const newWords = finalTranscript
-                                .trim()
-                                .split(/\s+/)
-                                .filter((word) => word.length > 0);
-                            setWords((prev) => [...prev, ...newWords]);
-                        }
-                    };
+    // Initialize recognition instance & lifecycle
+    useEffect(() => {
+        if (typeof window === "undefined") return;
 
-                    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-                        console.error("Speech recognition error:", event.error);
-
-                        // Handle specific error types
-                        switch (event.error) {
-                            case "not-allowed":
-                                alert("Microphone access denied. Please allow microphone access and try again.");
-                                break;
-                            case "no-speech":
-                                console.log("No speech detected, continuing...");
-                                break;
-                            case "audio-capture":
-                                alert("No microphone found. Please check your microphone connection.");
-                                break;
-                            case "network":
-                                console.log("Network error in speech recognition, but continuing...");
-                                break;
-                            case "service-not-allowed":
-                                alert("Speech recognition service not allowed. Please try using HTTPS.");
-                                break;
-                            case "aborted":
-                                console.log("Speech recognition aborted");
-                                break;
-                            case "language-not-supported":
-                                alert("Language not supported. Trying with default language...");
-                                break;
-                            default:
-                                console.log(`Speech recognition error: ${event.error}`);
-                        }
-
-                        // Only stop listening for critical errors
-                        if (["not-allowed", "audio-capture", "service-not-allowed"].includes(event.error)) {
-                            setIsListening(false);
-                        }
-                    };
-
-                    recognition.onend = () => {
-                        console.log("Speech recognition ended");
-                        // Restart if we're supposed to be listening and no critical error occurred
-                        if (isListening) {
-                            try {
-                                recognition.start();
-                            } catch (error) {
-                                console.error("Failed to restart recognition:", error);
-                                setIsListening(false);
-                            }
-                        }
-                    };
-                }
-            } else {
-                setIsSupported(false);
-            }
+        const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SR) {
+            setIsSupported(false);
+            return;
         }
+        setIsSupported(true);
 
-        return () => {
-            if (recognitionRef.current) {
+        const rec = new SR();
+        recognitionRef.current = rec;
+
+        rec.continuous = true;
+        rec.interimResults = true;
+        rec.lang = "en-IN";
+
+        rec.onstart = () => {
+            // console.log("Speech recognition started");
+        };
+
+        rec.onresult = (event: SpeechRecognitionEvent) => {
+            let finalPart = "";
+            let interimPart = "";
+
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+                const seg = event.results[i][0].transcript;
+                if (event.results[i].isFinal) {
+                    finalPart += seg + " ";
+                } else {
+                    interimPart += seg + " ";
+                }
+            }
+
+            setInterimTranscript(interimPart);
+
+            if (finalPart) {
+                setTranscript((prev) => prev + finalPart);
+                const newWords = finalPart.trim().split(/\s+/).filter(Boolean);
+                if (newWords.length) setWords((prev) => [...prev, ...newWords]);
+            }
+        };
+
+        rec.onerror = (event: SpeechRecognitionErrorEvent) => {
+            // handle non-fatal errors but keep listening
+            // console.log("SR error:", event.error);
+            if (["not-allowed", "audio-capture", "service-not-allowed"].includes(event.error)) {
+                setIsListening(false);
+            }
+        };
+
+        rec.onend = () => {
+            // auto-restart if user expects listening
+            if (isListening) {
                 try {
-                    recognitionRef.current.stop();
-                } catch (error) {
-                    console.error("Error stopping recognition:", error);
+                    rec.start();
+                } catch {
+                    setIsListening(false);
                 }
             }
         };
+
+        rec.onaudioend = () => {
+            setInterimTranscript("");
+        };
+
+        return () => {
+            try {
+                rec.stop();
+            } catch {}
+            recognitionRef.current = null;
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isListening]);
 
+    // Start/Stop recognition
     const startListening = async () => {
         if (!recognitionRef.current) return;
-
         try {
-            // Request microphone permission first
             await navigator.mediaDevices.getUserMedia({ audio: true });
-
-            if (!isListening) {
-                setIsListening(true);
-                recognitionRef.current.start();
-            }
+            setIsListening(true);
+            recognitionRef.current.start();
         } catch (error: any) {
-            console.error("Error starting speech recognition:", error);
-
-            if (error.name === "NotAllowedError") {
-                alert("Microphone access denied. Please allow microphone access in your browser settings.");
-            } else if (error.name === "NotFoundError") {
-                alert("No microphone found. Please connect a microphone and try again.");
-            } else {
-                alert("Error accessing microphone. Please check your browser settings and try again.");
-            }
-
             setIsListening(false);
+            const name = error?.name || "";
+            if (name === "NotAllowedError") alert("Microphone access denied. Enable mic permissions and retry.");
+            else if (name === "NotFoundError") alert("No microphone detected. Please connect a mic and retry.");
+            else alert("Microphone error. Check browser permissions and try again.");
         }
     };
 
     const stopListening = () => {
-        if (recognitionRef.current && isListening) {
-            try {
-                setIsListening(false);
-                recognitionRef.current.stop();
-            } catch (error) {
-                console.error("Error stopping recognition:", error);
-                setIsListening(false);
-            }
-        }
+        setIsListening(false);
+        try {
+            recognitionRef.current?.stop();
+        } catch {}
     };
 
-    const getAIResponse = async () => {
-        const last20Words = words.slice(-20).join(" ");
-        if (!last20Words.trim()) {
-            alert("No words detected. Please speak something first.");
+    // 5-second auto-respond loop
+    useEffect(() => {
+        if (autoTickRef.current) {
+            clearInterval(autoTickRef.current);
+            autoTickRef.current = null;
+        }
+        if (!isListening) return;
+
+        autoTickRef.current = window.setInterval(() => {
+            if (isGeneratingRef.current) return;
+
+            const wordsNow = wordsRef.current;
+            const newFinalWords = wordsNow.slice(lastSentIndexRef.current);
+            const hasNewFinal = newFinalWords.length > 0;
+
+            // Build payload: prefer new final words; else fallback to interim text
+            const payload = hasNewFinal ? newFinalWords.join(" ") : (interimRef.current || "").trim();
+
+            if (!payload) return;
+
+            // fire and conditionally move the cursor only if we sent final words & it succeeded
+            (async () => {
+                const ok = await getAIResponse(payload, /*isAuto*/ true);
+                if (ok && hasNewFinal) {
+                    lastSentIndexRef.current = wordsNow.length; // advance only on success
+                }
+            })();
+        }, 5000);
+
+        return () => {
+            if (autoTickRef.current) {
+                clearInterval(autoTickRef.current);
+                autoTickRef.current = null;
+            }
+        };
+    }, [isListening]);
+
+    // Manual response still available (uses last 20 words)
+    const manualRespond = () => {
+        const last20 = words.slice(-20).join(" ").trim();
+        if (!last20) {
+            alert("No captured speech yet. Please speak first.");
             return;
+        }
+        getAIResponse(last20, false);
+    };
+
+    // Core: fetch AI response (streaming-friendly)
+    const getAIResponse = async (promptOverride?: string, isAuto = false): Promise<boolean> => {
+        const prompt = (promptOverride ?? words.slice(-20).join(" ")).trim();
+        if (!prompt) {
+            if (!isAuto) alert("No words to send.");
+            return false;
         }
 
         setIsGenerating(true);
         setAiResponse("");
         setApiError(null);
 
+        // watchdog: if the stream hangs, clear isGenerating so autosend can resume
+        if (genWatchdogRef.current) {
+            clearTimeout(genWatchdogRef.current);
+            genWatchdogRef.current = null;
+        }
+        genWatchdogRef.current = window.setTimeout(() => {
+            setIsGenerating(false);
+        }, 25000);
+
         try {
             const response = await fetch("/api/chat", {
                 method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                },
+                headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     messages: [
                         {
                             role: "system",
                             content:
-                                "You are a helpful AI Tech assistant. Respond naturally and conversationally to what the user just said. Keep your response concise and relevant.",
+                                "You are a helpful AI Tech assistant. Respond naturally and conversationally to what the user just said. Keep it concise and relevant.",
                         },
-                        {
-                            role: "user",
-                            content: `Please respond to this: "${last20Words}"`,
-                        },
+                        { role: "user", content: `Please respond to this: "${prompt}"` },
                     ],
                 }),
             });
 
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
             const reader = response.body?.getReader();
             const decoder = new TextDecoder();
 
             if (!reader) {
-                // Fallback for non-streaming response
                 const text = await response.text();
                 setAiResponse(text);
-                setIsGenerating(false);
-                return;
+                return true;
             }
 
             let buffer = "";
-
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
@@ -287,93 +312,55 @@ export default function SpeechAIAssistant() {
                 buffer = lines.pop() || "";
 
                 for (const line of lines) {
-                    const trimmedLine = line.trim();
-                    if (!trimmedLine) continue;
-
+                    const trimmed = line.trim();
+                    if (!trimmed) continue;
                     try {
-                        // Handle AI SDK streaming format
-                        if (trimmedLine.startsWith("0:")) {
-                            // Extract content after the first colon
-                            let content = trimmedLine.slice(2);
-
-                            // Remove surrounding quotes if present
+                        if (trimmed.startsWith("0:")) {
+                            let content = trimmed.slice(2);
                             if (content.startsWith('"') && content.endsWith('"')) {
                                 content = content.slice(1, -1);
                             }
-
-                            // Decode escaped characters
                             content = content
                                 .replace(/\\n/g, "\n")
                                 .replace(/\\t/g, "\t")
                                 .replace(/\\"/g, '"')
                                 .replace(/\\\\/g, "\\");
-
-                            if (content) {
-                                setAiResponse((prev) => prev + content);
-                            }
-                        }
-                        // Handle standard SSE data format
-                        else if (trimmedLine.startsWith("data:")) {
-                            const data = trimmedLine.slice(5).trim();
+                            if (content) setAiResponse((prev) => prev + content);
+                        } else if (trimmed.startsWith("data:")) {
+                            const data = trimmed.slice(5).trim();
                             if (data === "[DONE]") continue;
-
                             const parsed = JSON.parse(data);
-                            if (parsed.choices?.[0]?.delta?.content) {
-                                setAiResponse((prev) => prev + parsed.choices[0].delta.content);
-                            }
+                            const piece = parsed?.choices?.[0]?.delta?.content;
+                            if (piece) setAiResponse((prev) => prev + piece);
                         }
-                    } catch (parseError) {
-                        // Skip lines that can't be parsed
-                        console.log("Skipping unparseable line:", trimmedLine);
+                    } catch {
+                        // ignore unparsable line
                     }
                 }
             }
-        } catch (error: any) {
-            console.error("Error getting AI response:", error);
-            if (error.name === "TypeError" && error.message.includes("fetch")) {
-                setApiError("API endpoint not available. Please ensure your backend server is running.");
-                setAiResponse("I'm sorry, I can't connect to the AI service right now.");
-            } else if (error.message.includes("404")) {
-                setApiError("API endpoint not found. Please check if '/api/chat' route is properly configured.");
-                setAiResponse("The AI service endpoint is not configured.");
-            } else if (error.message.includes("500")) {
-                setApiError("Server error occurred. Please try again later.");
-                setAiResponse("The AI service is experiencing issues.");
-            } else {
-                setApiError(`Network error: ${error.message}`);
-                setAiResponse("Sorry, I encountered a network error.");
-            }
+
+            return true;
+        } catch (err: any) {
+            const msg = err?.message || "Network error";
+            setApiError(msg);
+            setAiResponse("Sorry, I couldn't reach the AI service.");
+            return false;
         } finally {
+            if (genWatchdogRef.current) {
+                clearTimeout(genWatchdogRef.current);
+                genWatchdogRef.current = null;
+            }
             setIsGenerating(false);
         }
     };
 
-    const clearTranscript = () => {
+    const clearAll = () => {
         setTranscript("");
+        setInterimTranscript("");
         setWords([]);
         setAiResponse("");
         setApiError(null);
-    };
-
-    const speakResponse = () => {
-        if (aiResponse && "speechSynthesis" in window) {
-            // Stop any current speech
-            speechSynthesis.cancel();
-
-            const utterance = new SpeechSynthesisUtterance(aiResponse);
-            utterance.rate = 0.9;
-            utterance.pitch = 1;
-            utterance.volume = 1;
-
-            // Add error handling for speech synthesis
-            utterance.onerror = (event) => {
-                console.error("Speech synthesis error:", event);
-            };
-
-            speechSynthesis.speak(utterance);
-        } else {
-            alert("Speech synthesis is not supported in your browser.");
-        }
+        lastSentIndexRef.current = 0;
     };
 
     if (!isSupported) {
@@ -382,9 +369,7 @@ export default function SpeechAIAssistant() {
                 <Card className="w-full max-w-md">
                     <CardContent className="p-6 text-center">
                         <h2 className="text-xl font-semibold mb-4">Speech Recognition Not Supported</h2>
-                        <p className="text-gray-600">
-                            Your browser doesn't support speech recognition. Please use Chrome, Edge, or Safari.
-                        </p>
+                        <p className="text-gray-600">Use Chrome, Edge, or Safari on desktop for best results.</p>
                     </CardContent>
                 </Card>
             </div>
@@ -398,15 +383,17 @@ export default function SpeechAIAssistant() {
             <div className="max-w-4xl mx-auto space-y-6">
                 <div className="text-center">
                     <h1 className="text-3xl font-bold text-gray-900 mb-2">AI Speech Assistant</h1>
-                    <p className="text-gray-600">Speak naturally, and I'll respond to your last 20 words</p>
+                    <p className="text-gray-600">
+                        I’m listening continuously. I’ll auto-respond every 5 seconds to the new words you speak.
+                    </p>
                 </div>
 
-                {/* Error Display */}
+                {/* Error */}
                 {apiError && (
                     <Card className="border-red-200 bg-red-50">
                         <CardContent className="p-4">
                             <div className="flex items-center gap-2">
-                                <div className="w-2 h-2 bg-red-500 rounded-full"></div>
+                                <div className="w-2 h-2 bg-red-500 rounded-full" />
                                 <p className="text-red-700 text-sm font-medium">API Error: {apiError}</p>
                             </div>
                         </CardContent>
@@ -428,16 +415,16 @@ export default function SpeechAIAssistant() {
                             </Button>
 
                             <Button
-                                onClick={getAIResponse}
+                                onClick={manualRespond}
                                 disabled={words.length === 0 || isGenerating}
                                 size="lg"
                                 className="flex items-center gap-2"
                             >
                                 <MessageSquare className="w-5 h-5" />
-                                {isGenerating ? "Generating..." : "Get AI Response"}
+                                {isGenerating ? "Generating..." : "Respond (last 20 words)"}
                             </Button>
 
-                            <Button onClick={clearTranscript} variant="outline" size="lg">
+                            <Button onClick={clearAll} variant="outline" size="lg">
                                 Clear All
                             </Button>
                         </div>
@@ -451,11 +438,23 @@ export default function SpeechAIAssistant() {
                     </Badge>
                 </div>
 
+                {/* Live interim preview */}
+                {interimTranscript && (
+                    <Card>
+                        <CardHeader>
+                            <CardTitle className="text-lg">Listening (live)</CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                            <div className="bg-white border rounded-lg p-3 text-gray-700">{interimTranscript}</div>
+                        </CardContent>
+                    </Card>
+                )}
+
                 {/* Last 20 Words */}
                 {last20Words.length > 0 && (
                     <Card>
                         <CardHeader>
-                            <CardTitle className="text-lg">Last 20 Words (AI will respond to this)</CardTitle>
+                            <CardTitle className="text-lg">Last 20 Words (manual response uses this)</CardTitle>
                         </CardHeader>
                         <CardContent>
                             <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
@@ -474,29 +473,18 @@ export default function SpeechAIAssistant() {
                                 AI Response
                                 {isGenerating && (
                                     <div className="flex space-x-1">
-                                        <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce"></div>
+                                        <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce" />
                                         <div
                                             className="w-2 h-2 bg-blue-500 rounded-full animate-bounce"
                                             style={{ animationDelay: "0.1s" }}
-                                        ></div>
+                                        />
                                         <div
                                             className="w-2 h-2 bg-blue-500 rounded-full animate-bounce"
                                             style={{ animationDelay: "0.2s" }}
-                                        ></div>
+                                        />
                                     </div>
                                 )}
                             </CardTitle>
-                            {aiResponse && !isGenerating && (
-                                <Button
-                                    onClick={speakResponse}
-                                    variant="outline"
-                                    size="sm"
-                                    className="flex items-center gap-2 bg-transparent"
-                                >
-                                    <Volume2 className="w-4 h-4" />
-                                    Speak
-                                </Button>
-                            )}
                         </CardHeader>
                         <CardContent>
                             <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
