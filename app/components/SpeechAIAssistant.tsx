@@ -85,6 +85,44 @@ export default function SpeechAIAssistant() {
 
     const recognitionRef = useRef<SpeechRecognition | null>(null);
 
+    // ---- SR state guards & activity tracking ----
+    const isStartingRef = useRef(false);
+    const lastHeardAtRef = useRef<number>(Date.now());
+    const keepAliveTimerRef = useRef<number | null>(null);
+
+    const safeStart = async () => {
+        const rec = recognitionRef.current;
+        if (!rec) return;
+        if (isStartingRef.current) return;
+        isStartingRef.current = true;
+        try {
+            rec.start();
+        } catch {
+            // swallow; Chrome throws if called too soon
+        } finally {
+            // give the engine a beat before allowing another start
+            window.setTimeout(() => {
+                isStartingRef.current = false;
+            }, 300);
+        }
+    };
+
+    const safeStop = () => {
+        const rec = recognitionRef.current;
+        if (!rec) return;
+        try {
+            rec.stop();
+        } catch {}
+    };
+
+    const forceRestartRecognition = () => {
+        // hard reset: stop -> small delay -> start
+        safeStop();
+        window.setTimeout(() => {
+            safeStart();
+        }, 250);
+    };
+
     // Autosend machinery
     const autoTickRef = useRef<number | null>(null);
     const lastSentIndexRef = useRef(0);
@@ -127,24 +165,22 @@ export default function SpeechAIAssistant() {
         rec.lang = "en-IN";
 
         rec.onstart = () => {
-            // console.log("Speech recognition started");
+            // session started; mark activity so keep-alive doesn’t fire immediately
+            lastHeardAtRef.current = Date.now();
         };
 
         rec.onresult = (event: SpeechRecognitionEvent) => {
+            lastHeardAtRef.current = Date.now(); // 🔑 any event = activity
             let finalPart = "";
             let interimPart = "";
 
             for (let i = event.resultIndex; i < event.results.length; i++) {
                 const seg = event.results[i][0].transcript;
-                if (event.results[i].isFinal) {
-                    finalPart += seg + " ";
-                } else {
-                    interimPart += seg + " ";
-                }
+                if (event.results[i].isFinal) finalPart += seg + " ";
+                else interimPart += seg + " ";
             }
 
             setInterimTranscript(interimPart);
-
             if (finalPart) {
                 setTranscript((prev) => prev + finalPart);
                 const newWords = finalPart.trim().split(/\s+/).filter(Boolean);
@@ -153,21 +189,32 @@ export default function SpeechAIAssistant() {
         };
 
         rec.onerror = (event: SpeechRecognitionErrorEvent) => {
-            // handle non-fatal errors but keep listening
-            // console.log("SR error:", event.error);
-            if (["not-allowed", "audio-capture", "service-not-allowed"].includes(event.error)) {
+            // common, non-fatal errors we should recover from
+            const e = event.error;
+            if (e === "no-speech" || e === "aborted" || e === "network") {
+                // quick recycle tends to work best
+                if (isListening) {
+                    forceRestartRecognition();
+                }
+                return;
+            }
+
+            if (["not-allowed", "audio-capture", "service-not-allowed"].includes(e)) {
+                // fatal; stop listening
                 setIsListening(false);
+            } else {
+                // other weird errors: try a quick recycle
+                if (isListening) forceRestartRecognition();
             }
         };
 
         rec.onend = () => {
-            // auto-restart if user expects listening
+            // Chrome will call this after ~30–60s of silence.
             if (isListening) {
-                try {
-                    rec.start();
-                } catch {
-                    setIsListening(false);
-                }
+                // small delay is important; immediate start often throws
+                setTimeout(() => {
+                    safeStart();
+                }, 300);
             }
         };
 
@@ -184,13 +231,13 @@ export default function SpeechAIAssistant() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isListening]);
 
-    // Start/Stop recognition
     const startListening = async () => {
         if (!recognitionRef.current) return;
         try {
             await navigator.mediaDevices.getUserMedia({ audio: true });
             setIsListening(true);
-            recognitionRef.current.start();
+            lastHeardAtRef.current = Date.now();
+            await safeStart();
         } catch (error: any) {
             setIsListening(false);
             const name = error?.name || "";
@@ -202,12 +249,38 @@ export default function SpeechAIAssistant() {
 
     const stopListening = () => {
         setIsListening(false);
-        try {
-            recognitionRef.current?.stop();
-        } catch {}
+        safeStop();
     };
 
     // 5-second auto-respond loop
+
+    useEffect(() => {
+        if (!isListening) {
+            if (keepAliveTimerRef.current) {
+                clearInterval(keepAliveTimerRef.current);
+                keepAliveTimerRef.current = null;
+            }
+            return;
+        }
+
+        // check every 5s; if no activity for 10s, recycle SR
+        keepAliveTimerRef.current = window.setInterval(() => {
+            const idleMs = Date.now() - lastHeardAtRef.current;
+            if (idleMs > 10000) {
+                // stale session; recycle
+                forceRestartRecognition();
+                lastHeardAtRef.current = Date.now();
+            }
+        }, 5000);
+
+        return () => {
+            if (keepAliveTimerRef.current) {
+                clearInterval(keepAliveTimerRef.current);
+                keepAliveTimerRef.current = null;
+            }
+        };
+    }, [isListening]);
+
     useEffect(() => {
         if (autoTickRef.current) {
             clearInterval(autoTickRef.current);
@@ -273,7 +346,7 @@ export default function SpeechAIAssistant() {
         }
         genWatchdogRef.current = window.setTimeout(() => {
             setIsGenerating(false);
-        }, 25000);
+        }, 15000);
 
         try {
             const response = await fetch("/api/chat", {
