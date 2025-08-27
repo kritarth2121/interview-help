@@ -357,7 +357,7 @@ export default function SpeechAIAssistant() {
                         {
                             role: "system",
                             content:
-                                "You are a helpful AI Tech assistant. Respond naturally and conversationally to what the user just said. Keep it concise and relevant.",
+                                "You are a helpful AI Tech assistant. Respond naturally and conversationally to what the user just said. Keep it concise and relevant like an answer of an interview. Correct transcription errors for Indian English speech.",
                         },
                         { role: "user", content: `Please respond to this: "${prompt}"` },
                     ],
