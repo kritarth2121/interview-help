@@ -30,13 +30,6 @@ interface SpeechRecognitionErrorEvent extends Event {
     error: string;
 }
 
-// Extend Window interface for Speech Recognition
-declare global {
-    interface Window {
-        SpeechRecognition: typeof SpeechRecognition;
-        webkitSpeechRecognition: typeof SpeechRecognition;
-    }
-}
 
 interface SpeechRecognition extends EventTarget {
     continuous: boolean;
@@ -95,7 +88,7 @@ const VoiceAssistant: React.FC = () => {
 
         // Initialize speech recognition
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        recognitionRef.current = new SpeechRecognition();
+        (recognitionRef as any).current = new SpeechRecognition();
 
         if (recognitionRef.current) {
             recognitionRef.current.continuous = true;

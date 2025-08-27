@@ -100,7 +100,7 @@ export default function SpeechAIAssistant() {
                     const recognition = recognitionRef.current;
                     recognition.continuous = true;
                     recognition.interimResults = true;
-                    recognition.lang = "en-US";
+                    recognition.lang = "en-IN"; // English (India)
 
                     recognition.onstart = () => {
                         console.log("Speech recognition started");
@@ -231,18 +231,16 @@ export default function SpeechAIAssistant() {
 
     const getAIResponse = async () => {
         const last20Words = words.slice(-20).join(" ");
-
         if (!last20Words.trim()) {
             alert("No words detected. Please speak something first.");
             return;
         }
 
         setIsGenerating(true);
-        setAiResponse(""); // Clear previous response
-        setApiError(null); // Clear previous API errors
+        setAiResponse("");
+        setApiError(null);
 
         try {
-            // Check if the API endpoint exists
             const response = await fetch("/api/chat", {
                 method: "POST",
                 headers: {
@@ -253,7 +251,7 @@ export default function SpeechAIAssistant() {
                         {
                             role: "system",
                             content:
-                                "You are a helpful AI assistant. Respond naturally and conversationally to what the user just said. Keep your response concise and relevant.",
+                                "You are a helpful AI Tech assistant. Respond naturally and conversationally to what the user just said. Keep your response concise and relevant.",
                         },
                         {
                             role: "user",
@@ -270,48 +268,80 @@ export default function SpeechAIAssistant() {
             const reader = response.body?.getReader();
             const decoder = new TextDecoder();
 
-            if (reader) {
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
+            if (!reader) {
+                // Fallback for non-streaming response
+                const text = await response.text();
+                setAiResponse(text);
+                setIsGenerating(false);
+                return;
+            }
 
-                    const chunk = decoder.decode(value);
-                    const lines = chunk.split("\n");
+            let buffer = "";
 
-                    for (const line of lines) {
-                        if (line.startsWith("0:")) {
-                            try {
-                                const data = JSON.parse(line.slice(2));
-                                if (data.type === "text-delta") {
-                                    // Update response in real-time by appending each delta
-                                    setAiResponse((prev) => prev + data.textDelta);
-                                }
-                            } catch (e) {
-                                // Ignore parsing errors for streaming data
-                                console.warn("Failed to parse streaming data:", e);
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split("\n");
+                buffer = lines.pop() || "";
+
+                for (const line of lines) {
+                    const trimmedLine = line.trim();
+                    if (!trimmedLine) continue;
+
+                    try {
+                        // Handle AI SDK streaming format
+                        if (trimmedLine.startsWith("0:")) {
+                            // Extract content after the first colon
+                            let content = trimmedLine.slice(2);
+
+                            // Remove surrounding quotes if present
+                            if (content.startsWith('"') && content.endsWith('"')) {
+                                content = content.slice(1, -1);
+                            }
+
+                            // Decode escaped characters
+                            content = content
+                                .replace(/\\n/g, "\n")
+                                .replace(/\\t/g, "\t")
+                                .replace(/\\"/g, '"')
+                                .replace(/\\\\/g, "\\");
+
+                            if (content) {
+                                setAiResponse((prev) => prev + content);
                             }
                         }
+                        // Handle standard SSE data format
+                        else if (trimmedLine.startsWith("data:")) {
+                            const data = trimmedLine.slice(5).trim();
+                            if (data === "[DONE]") continue;
+
+                            const parsed = JSON.parse(data);
+                            if (parsed.choices?.[0]?.delta?.content) {
+                                setAiResponse((prev) => prev + parsed.choices[0].delta.content);
+                            }
+                        }
+                    } catch (parseError) {
+                        // Skip lines that can't be parsed
+                        console.log("Skipping unparseable line:", trimmedLine);
                     }
                 }
             }
         } catch (error: any) {
             console.error("Error getting AI response:", error);
-
-            // Provide more specific error handling
             if (error.name === "TypeError" && error.message.includes("fetch")) {
                 setApiError("API endpoint not available. Please ensure your backend server is running.");
-                setAiResponse(
-                    "I'm sorry, but I can't connect to the AI service right now. The backend API appears to be unavailable."
-                );
+                setAiResponse("I'm sorry, I can't connect to the AI service right now.");
             } else if (error.message.includes("404")) {
                 setApiError("API endpoint not found. Please check if '/api/chat' route is properly configured.");
-                setAiResponse("The AI service endpoint is not configured. Please set up the backend API.");
+                setAiResponse("The AI service endpoint is not configured.");
             } else if (error.message.includes("500")) {
                 setApiError("Server error occurred. Please try again later.");
-                setAiResponse("The AI service is experiencing issues. Please try again in a moment.");
+                setAiResponse("The AI service is experiencing issues.");
             } else {
                 setApiError(`Network error: ${error.message}`);
-                setAiResponse("Sorry, I encountered a network error while trying to generate a response.");
+                setAiResponse("Sorry, I encountered a network error.");
             }
         } finally {
             setIsGenerating(false);
@@ -353,7 +383,7 @@ export default function SpeechAIAssistant() {
                     <CardContent className="p-6 text-center">
                         <h2 className="text-xl font-semibold mb-4">Speech Recognition Not Supported</h2>
                         <p className="text-gray-600">
-                            Your browser doesnt support speech recognition. Please use Chrome, Edge, or Safari.
+                            Your browser doesn't support speech recognition. Please use Chrome, Edge, or Safari.
                         </p>
                     </CardContent>
                 </Card>
@@ -368,7 +398,7 @@ export default function SpeechAIAssistant() {
             <div className="max-w-4xl mx-auto space-y-6">
                 <div className="text-center">
                     <h1 className="text-3xl font-bold text-gray-900 mb-2">AI Speech Assistant</h1>
-                    <p className="text-gray-600">Speak naturally, and Ill respond to your last 20 words</p>
+                    <p className="text-gray-600">Speak naturally, and I'll respond to your last 20 words</p>
                 </div>
 
                 {/* Error Display */}

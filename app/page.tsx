@@ -1,9 +1,9 @@
-import VoiceAssistant from "./components/VoiceAssistant";
+import EnhancedSpeechAIAssistant from "./components/SpeechAIAssistant";
 
 export default function page() {
     return (
         <div>
-            <VoiceAssistant />
+            <EnhancedSpeechAIAssistant />
         </div>
     );
 }
