@@ -1,9 +1,10 @@
-import EnhancedSpeechAIAssistant from "./components/SpeechAIAssistant";
+import EnhancedSpeechAIAssistant from "./components/outdated/SpeechAIAssistantOutdated";
+import SpeechAIAssistant from "./components/SpeechAIAssistantChatGpt";
 
 export default function page() {
     return (
         <div>
-            <EnhancedSpeechAIAssistant />
+            <SpeechAIAssistant />
         </div>
     );
 }

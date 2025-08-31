@@ -71,7 +71,7 @@ declare global {
 }
 
 /* =========================== Component ============================ */
-export default function SpeechAIAssistant() {
+export default function SpeechAIAssistantOutdated() {
     const [isListening, setIsListening] = useState(false);
     const [isSupported, setIsSupported] = useState(false);
 
