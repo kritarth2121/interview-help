@@ -5,6 +5,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Mic, MicOff, MessageSquare, Trash2, Send } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 /* ====================== Web Speech API Types (TS-safe) ====================== */
 interface SpeechGrammarList {
@@ -464,7 +466,7 @@ export default function SpeechAIAssistant() {
                 <Badge variant="secondary">{isListening ? "Listening…" : "Idle"}</Badge>
             </CardHeader>
 
-            <CardContent className="flex flex-col gap-4 h-[calc(100vh-12rem)]">
+            <CardContent className="flex flex-col gap-4 h-[calc(100vh-12rem)] overflow-y-auto">
                 {/* Transcript window (TOP) */}
                 <div ref={scrollBoxRef} className="border rounded-md p-3 flex-1 overflow-y-auto space-y-3 bg-muted/20">
                     {cleanTranscript.length === 0 && (
@@ -487,7 +489,10 @@ export default function SpeechAIAssistant() {
                                 <div className="text-[10px] opacity-60 mb-0.5">
                                     {t.role === "assistant" ? "Assistant" : "You"}
                                 </div>
-                                <div className="whitespace-pre-wrap">{t.content}</div>
+
+                                <div className="prose prose-sm max-w-none dark:prose-invert">
+                                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{t.content}</ReactMarkdown>
+                                </div>
                             </div>
                         </div>
                     ))}
