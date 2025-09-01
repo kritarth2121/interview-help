@@ -422,6 +422,8 @@ export default function SpeechAIAssistant() {
         []
     );
 
+    console.log(transcript, "transcript");
+
     /* ================== Answer Now (manual or auto) ================== */
     // skipPush: if true, do NOT add a user turn (used when we already pushed in onresult)
     const answerNow = useCallback(
