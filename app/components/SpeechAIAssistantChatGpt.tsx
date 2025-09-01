@@ -77,10 +77,10 @@ const newRecognizer = (): SpeechRecognition | null => {
     if (!hasSpeechAPI) return null;
     const Ctor = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     const rec: SpeechRecognition = new Ctor();
-    rec.continuous = true; // keep listening
-    rec.interimResults = true; // partial results while speaking
+    rec.continuous = true;
+    rec.interimResults = true;
     rec.maxAlternatives = 1;
-    rec.lang = "en-IN"; // Indian English
+    rec.lang = "en-IN";
     return rec;
 };
 
@@ -135,6 +135,21 @@ export default function SpeechAIAssistant() {
     const scrollBoxRef = useRef<HTMLDivElement | null>(null);
     const assistantIndexRef = useRef<number>(-1);
 
+    // NEW: small de-dupe buffer of recently finalized utterances
+    const recentFinalsRef = useRef<string[]>([]); // store normalized strings
+
+    const normalize = (s: string) => s.trim().replace(/\s+/g, " ").toLowerCase();
+
+    const isDuplicateFinal = (s: string) => {
+        const key = normalize(s);
+        const hit = recentFinalsRef.current.includes(key);
+        if (!hit) {
+            recentFinalsRef.current.push(key);
+            if (recentFinalsRef.current.length > 20) recentFinalsRef.current.shift();
+        }
+        return hit;
+    };
+
     /* Typing dots while streaming */
     useEffect(() => {
         if (!isAnswering) return;
@@ -162,13 +177,14 @@ export default function SpeechAIAssistant() {
         if (!recognitionRef.current) recognitionRef.current = newRecognizer();
         return recognitionRef.current;
     }, []);
-
-    /* Start continuous listening */
+    /* ================== Start / Stop Mic ================== */
     const startListening = useCallback(() => {
         if (!hasSpeechAPI) {
             alert("Web Speech API is not supported in this browser.");
             return;
         }
+        if (isListening) return; // guard against double starts
+
         const rec = ensureRecognizer();
         if (!rec) return;
 
@@ -190,15 +206,18 @@ export default function SpeechAIAssistant() {
                 const clean = finalChunk.trim();
                 if (!clean) return;
 
-                // Show finalized piece as a user turn
+                // De-dupe finals that Chrome sometimes re-emits on restart
+                if (isDuplicateFinal(clean)) return;
+
+                // Push finalized piece as a user turn ONCE
                 setTranscript((prev) => [...prev, { role: "user", content: clean, ts: now() }]);
 
                 // Buffer for combined prompt
                 setPendingFinalUser((prev) => (prev ? `${prev.trim()} ${clean}`.trim() : clean));
 
-                // Auto-answer when we detect a question; pass exact text to avoid state races
+                // Auto-answer when we detect a question — do NOT push user again
                 if (endsWithQuestion(clean)) {
-                    void answerNow(clean);
+                    void answerNow(clean, true /* skipPush */);
                 }
             }
         };
@@ -239,9 +258,8 @@ export default function SpeechAIAssistant() {
             keepAliveRef.current = false;
             setIsListening(false);
         }
-    }, [ensureRecognizer]);
+    }, [ensureRecognizer, isListening]);
 
-    /* Stop listening (soft stop by default) */
     const stopListening = useCallback((hardAbort = false) => {
         const rec = recognitionRef.current;
         keepAliveRef.current = false;
@@ -390,8 +408,9 @@ export default function SpeechAIAssistant() {
     );
 
     /* ================== Answer Now (manual or auto) ================== */
+    // skipPush: if true, do NOT add a user turn (used when we already pushed in onresult)
     const answerNow = useCallback(
-        async (textOverride?: string) => {
+        async (textOverride?: string, skipPush = false) => {
             if (isAnswering) return;
 
             const snapshotInterim = interimText.trim();
@@ -402,7 +421,9 @@ export default function SpeechAIAssistant() {
             }
             if (!userText) return;
 
-            setTranscript((prev) => [...prev, { role: "user", content: userText, ts: now() }]);
+            if (!skipPush) {
+                setTranscript((prev) => [...prev, { role: "user", content: userText, ts: now() }]);
+            }
 
             setInterimText("");
             setPendingFinalUser("");
@@ -427,6 +448,7 @@ export default function SpeechAIAssistant() {
         setTranscript([{ role: "system", content: SYSTEM_PROMPT, ts: now() }]);
         setInterimText("");
         setPendingFinalUser("");
+        recentFinalsRef.current = [];
     }, []);
 
     const cleanTranscript = useMemo(() => transcript.filter((t) => t.role !== "system"), [transcript]);
@@ -442,8 +464,6 @@ export default function SpeechAIAssistant() {
                 <Badge variant="secondary">{isListening ? "Listening…" : "Idle"}</Badge>
             </CardHeader>
 
-            {/* Make the content a vertical layout that fills most of the viewport.
-          Transcript grows; footer sticks to bottom. */}
             <CardContent className="flex flex-col gap-4 h-[calc(100vh-12rem)]">
                 {/* Transcript window (TOP) */}
                 <div ref={scrollBoxRef} className="border rounded-md p-3 flex-1 overflow-y-auto space-y-3 bg-muted/20">
