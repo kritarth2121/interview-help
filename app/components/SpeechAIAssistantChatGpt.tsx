@@ -89,7 +89,6 @@ const newRecognizer = (): SpeechRecognition | null => {
 const endsWithQuestion = (text: string): boolean => {
     const t = text.trim();
     if (!t) return false;
-    if (/[?？！]$/.test(t)) return true;
     const first = t.split(/\s+/)[0]?.toLowerCase();
     return (
         new Set([
@@ -142,6 +141,9 @@ export default function SpeechAIAssistant() {
 
     const normalize = (s: string) => s.trim().replace(/\s+/g, " ").toLowerCase();
 
+    const finalizationTimerRef = useRef<NodeJS.Timeout | null>(null);
+    const PAUSE_DELAY = 1500; // ms of silence before treating as "final word/phrase"
+
     const isDuplicateFinal = (s: string) => {
         const key = normalize(s);
         const hit = recentFinalsRef.current.includes(key);
@@ -179,6 +181,7 @@ export default function SpeechAIAssistant() {
         if (!recognitionRef.current) recognitionRef.current = newRecognizer();
         return recognitionRef.current;
     }, []);
+
     /* ================== Start / Stop Mic ================== */
     const startListening = useCallback(() => {
         if (!hasSpeechAPI) {
@@ -195,11 +198,17 @@ export default function SpeechAIAssistant() {
             let finalChunk = "";
 
             for (let i = ev.resultIndex; i < ev.results.length; i++) {
-                const res = ev.results[i];
-                const alt = res[0];
+                const result = ev.results[i];
+                const alt = result[0];
                 if (!alt) continue;
-                if (res.isFinal) finalChunk += alt.transcript;
-                else interim += alt.transcript;
+                if (result.isFinal) {
+                    finalChunk += alt.transcript;
+                } else {
+                    interim += alt.transcript;
+                }
+
+                console.log(finalChunk, "finalChunk");
+                console.log(interim, "interim");
             }
 
             setInterimText(interim || "");
@@ -208,19 +217,23 @@ export default function SpeechAIAssistant() {
                 const clean = finalChunk.trim();
                 if (!clean) return;
 
-                // De-dupe finals that Chrome sometimes re-emits on restart
-                if (isDuplicateFinal(clean)) return;
+                // clear previous timer
+                if (finalizationTimerRef.current) clearTimeout(finalizationTimerRef.current);
 
-                // Push finalized piece as a user turn ONCE
-                setTranscript((prev) => [...prev, { role: "user", content: clean, ts: now() }]);
+                // wait extra pause before committing final
+                finalizationTimerRef.current = setTimeout(() => {
+                    if (isDuplicateFinal(clean)) return;
 
-                // Buffer for combined prompt
-                setPendingFinalUser((prev) => (prev ? `${prev.trim()} ${clean}`.trim() : clean));
+                    setTranscript((prev) => [...prev, { role: "user", content: clean, ts: now() }]);
 
-                // Auto-answer when we detect a question — do NOT push user again
-                if (endsWithQuestion(clean)) {
-                    void answerNow(clean, true /* skipPush */);
-                }
+                    // Build complete text FIRST
+                    const completeText = pendingFinalUser ? `${pendingFinalUser.trim()} ${clean}`.trim() : clean;
+                    setPendingFinalUser(completeText);
+
+                    if (endsWithQuestion(completeText)) {
+                        void answerNow(completeText, true); // Now it gets the complete text
+                    }
+                }, PAUSE_DELAY);
             }
         };
 
@@ -432,12 +445,17 @@ export default function SpeechAIAssistant() {
 
             const MAX_TURNS = 12;
             const base = transcript.filter((m) => m.role !== "system");
+
+            console.log(base, transcript, "base");
+
             const recent = base.slice(-MAX_TURNS);
             const messagesForAI = [
                 { role: "system" as const, content: SYSTEM_PROMPT },
                 ...recent.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
                 { role: "user" as const, content: userText },
             ];
+
+            console.log("Messages for AI:", messagesForAI);
 
             await streamAI(messagesForAI);
         },
