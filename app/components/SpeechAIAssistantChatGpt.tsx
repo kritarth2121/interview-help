@@ -59,8 +59,6 @@ interface SpeechRecognition extends EventTarget {
     onnomatch: ((this: SpeechRecognition, ev: SpeechRecognitionEvent) => any) | null;
 }
 
-
-
 /* ============================ Types & Helpers ============================ */
 type Role = "system" | "user" | "assistant";
 interface ChatTurn {
@@ -71,12 +69,14 @@ interface ChatTurn {
 
 const SYSTEM_PROMPT = "Helpful AI tech assistant, concise, correct Indian English errors.";
 
-const hasSpeechAPI = typeof window !== "undefined" && !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+const hasSpeechAPI =
+    (typeof window !== "undefined" && !!(window as any).SpeechRecognition) ||
+    !!(typeof window !== "undefined" && (window as any).webkitSpeechRecognition);
 
 const newRecognizer = (): SpeechRecognition | null => {
     if (!hasSpeechAPI) return null;
-    const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition;
-    const rec: SpeechRecognition = new (Ctor as any)();
+    const Ctor = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    const rec: SpeechRecognition = new Ctor();
     rec.continuous = true; // keep listening
     rec.interimResults = true; // partial results while speaking
     rec.maxAlternatives = 1;
@@ -207,9 +207,9 @@ export default function SpeechAIAssistant() {
             if (ev.error === "not-allowed" || ev.error === "service-not-allowed") {
                 keepAliveRef.current = false;
                 setIsListening(false);
-                console.error("Speech permission error:", ev.message);
+                console.error("Speech permission error:", (ev as any).message);
             } else {
-                console.warn("Speech error:", ev.error, ev.message);
+                console.warn("Speech error:", ev.error, (ev as any).message);
             }
         };
 
@@ -263,7 +263,7 @@ export default function SpeechAIAssistant() {
         };
     }, [stopListening]);
 
-    /* ================== SSE Client for /api/chat (robust across chat streams) ================== */
+    /* ================== SSE Client for /api/chat ================== */
     const streamAI = useCallback(
         async (messagesForAI: Array<{ role: "system" | "user" | "assistant"; content: string }>) => {
             setIsAnswering(true);
@@ -310,50 +310,42 @@ export default function SpeechAIAssistant() {
                     });
                 };
 
-                // Parse a quoted string payload and unescape via JSON
                 const parseQuoted = (s: string): string | null => {
                     const m = s.match(/^"([\s\S]*)"$/);
                     if (!m) return null;
                     try {
-                        return JSON.parse(s); // proper unescaping
+                        return JSON.parse(s);
                     } catch {
-                        return m[1]; // fallback raw inner text
+                        return m[1];
                     }
                 };
 
-                // Extract text from various payload shapes (covers "all chats")
                 const extractText = (payload: string): string => {
-                    // 1) Try JSON (Vercel AI SDK / other JSON-emitting servers)
                     try {
                         const evt = JSON.parse(payload);
                         const delta: string =
-                            evt?.delta ??
-                            evt?.textDelta ??
-                            evt?.value ??
-                            evt?.content ??
-                            (evt?.data && (evt.data.delta || evt.data.textDelta)) ??
+                            (evt?.delta ??
+                                evt?.textDelta ??
+                                evt?.value ??
+                                evt?.content ??
+                                (evt?.data && (evt.data.delta || evt.data.textDelta))) ||
                             "";
                         if (typeof delta === "string" && delta) return delta;
                     } catch {
                         /* not JSON; continue */
                     }
 
-                    // 2) index-prefixed chunk: 0:"Hi"
                     const mIdx = payload.match(/^\d+:\s*("([\s\S]*)")$/);
                     if (mIdx && mIdx[1]) {
                         const s = parseQuoted(mIdx[1]);
                         if (s) return s;
                     }
 
-                    // 3) plain quoted string: "Hello world"
                     const q = parseQuoted(payload);
                     if (q) return q;
 
-                    // 4) metadata frames like f:{…}, e:{…}, d:{…} → ignore
                     if (/^[fed]:\s*\{/.test(payload)) return "";
 
-                    // 5) Some servers send bare text without quotes. As a last resort, pass it through
-                    // ONLY if it looks like normal words (avoid dumping JSON-ish blobs).
                     if (/^[\w"“”‘’().,:;!?%\-–—\s]+$/.test(payload)) {
                         return payload;
                     }
@@ -361,13 +353,11 @@ export default function SpeechAIAssistant() {
                     return "";
                 };
 
-                // Read stream; accept lines with or without `data:` prefix
                 while (true) {
                     const { value, done } = await reader.read();
                     if (done) break;
                     buf += decoder.decode(value, { stream: true });
 
-                    // Process full lines; leave any partial line in buf
                     let nlIdx: number;
                     while ((nlIdx = buf.search(/\r?\n/)) >= 0) {
                         const line = buf.slice(0, nlIdx);
@@ -375,10 +365,7 @@ export default function SpeechAIAssistant() {
 
                         let raw = line.trim();
                         if (!raw) continue;
-
-                        // Accept both "data: ..." AND raw payload lines
                         if (raw.startsWith("data:")) raw = raw.slice(5).trim();
-
                         if (!raw || raw === "[DONE]") continue;
 
                         const text = extractText(raw);
@@ -386,7 +373,6 @@ export default function SpeechAIAssistant() {
                     }
                 }
 
-                // Flush any remaining buffered line (if server ended without newline)
                 const tail = buf.trim();
                 if (tail) {
                     const payload = tail.startsWith("data:") ? tail.slice(5).trim() : tail;
@@ -411,20 +397,16 @@ export default function SpeechAIAssistant() {
             const snapshotInterim = interimText.trim();
             let userText = textOverride?.trim() || pendingFinalUser.trim();
 
-            // If clicking Answer Now mid-utterance, commit interim too
             if (!textOverride && snapshotInterim) {
                 userText = userText ? `${userText} ${snapshotInterim}` : snapshotInterim;
             }
             if (!userText) return;
 
-            // Show user turn immediately
             setTranscript((prev) => [...prev, { role: "user", content: userText, ts: now() }]);
 
-            // Reset buffers
             setInterimText("");
             setPendingFinalUser("");
 
-            // Compact context (synchronous snapshot)
             const MAX_TURNS = 12;
             const base = transcript.filter((m) => m.role !== "system");
             const recent = base.slice(-MAX_TURNS);
@@ -449,7 +431,7 @@ export default function SpeechAIAssistant() {
 
     const cleanTranscript = useMemo(() => transcript.filter((t) => t.role !== "system"), [transcript]);
 
-    /* ================== UI ================== */
+    /* ================== UI (Transcript on top, controls at bottom) ================== */
     return (
         <Card className="w-full max-w-2xl mx-auto">
             <CardHeader className="flex items-center justify-between space-y-0">
@@ -460,35 +442,11 @@ export default function SpeechAIAssistant() {
                 <Badge variant="secondary">{isListening ? "Listening…" : "Idle"}</Badge>
             </CardHeader>
 
-            <CardContent className="space-y-4">
-                {/* Controls */}
-                <div className="flex flex-wrap gap-2">
-                    {!isListening ? (
-                        <Button onClick={startListening} size="sm">
-                            <Mic className="h-4 w-4 mr-2" /> Start Mic
-                        </Button>
-                    ) : (
-                        <Button onClick={() => stopListening()} size="sm" variant="destructive">
-                            <MicOff className="h-4 w-4 mr-2" /> Stop Mic
-                        </Button>
-                    )}
-
-                    <Button onClick={() => void answerNow()} size="sm" disabled={isAnswering}>
-                        <Send className="h-4 w-4 mr-2" /> Answer Now
-                    </Button>
-
-                    <Button onClick={clearAll} size="sm" variant="secondary">
-                        <Trash2 className="h-4 w-4 mr-2" /> Clear All
-                    </Button>
-                </div>
-
-                {/* Interim speech preview */}
-                <div className="text-sm text-muted-foreground min-h-5">
-                    {isListening && interimText ? <em>Speaking: “{interimText}”</em> : null}
-                </div>
-
-                {/* Transcript window */}
-                <div ref={scrollBoxRef} className="border rounded-md p-3 h-80 overflow-y-auto space-y-3 bg-muted/20">
+            {/* Make the content a vertical layout that fills most of the viewport.
+          Transcript grows; footer sticks to bottom. */}
+            <CardContent className="flex flex-col gap-4 h-[calc(100vh-12rem)]">
+                {/* Transcript window (TOP) */}
+                <div ref={scrollBoxRef} className="border rounded-md p-3 flex-1 overflow-y-auto space-y-3 bg-muted/20">
                     {cleanTranscript.length === 0 && (
                         <div className="text-sm text-muted-foreground">
                             Start speaking… I’ll auto-answer when I hear a question. You can also click{" "}
@@ -524,11 +482,40 @@ export default function SpeechAIAssistant() {
                     )}
                 </div>
 
-                {!hasSpeechAPI && (
-                    <div className="text-xs text-destructive">
-                        This browser doesn’t support the Web Speech API. Try Chrome or Edge (desktop).
+                {/* Sticky footer (BOTTOM): interim + controls */}
+                <div className="sticky bottom-0 bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60 rounded-md border p-3 space-y-3">
+                    {/* Interim speech preview */}
+                    <div className="text-sm text-muted-foreground min-h-5">
+                        {isListening && interimText ? <em>Speaking: “{interimText}”</em> : null}
                     </div>
-                )}
+
+                    {/* Controls */}
+                    <div className="flex flex-wrap gap-2">
+                        {!isListening ? (
+                            <Button onClick={startListening} size="sm">
+                                <Mic className="h-4 w-4 mr-2" /> Start Mic
+                            </Button>
+                        ) : (
+                            <Button onClick={() => stopListening()} size="sm" variant="destructive">
+                                <MicOff className="h-4 w-4 mr-2" /> Stop Mic
+                            </Button>
+                        )}
+
+                        <Button onClick={() => void answerNow()} size="sm" disabled={isAnswering}>
+                            <Send className="h-4 w-4 mr-2" /> Answer Now
+                        </Button>
+
+                        <Button onClick={clearAll} size="sm" variant="secondary">
+                            <Trash2 className="h-4 w-4 mr-2" /> Clear All
+                        </Button>
+                    </div>
+
+                    {!hasSpeechAPI && (
+                        <div className="text-xs text-destructive">
+                            This browser doesn’t support the Web Speech API. Try Chrome or Edge (desktop).
+                        </div>
+                    )}
+                </div>
             </CardContent>
         </Card>
     );
