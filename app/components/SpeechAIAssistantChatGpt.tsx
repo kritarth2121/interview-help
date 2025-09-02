@@ -141,7 +141,8 @@ export default function SpeechAIAssistant() {
 
     const normalize = (s: string) => s.trim().replace(/\s+/g, " ").toLowerCase();
 
-    const finalizationTimerRef = useRef<NodeJS.Timeout | null>(null);
+    // ✅ High: browser-safe timer type
+    const finalizationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const PAUSE_DELAY = 1500; // ms of silence before treating as "final word/phrase"
 
     const isDuplicateFinal = (s: string) => {
@@ -207,8 +208,10 @@ export default function SpeechAIAssistant() {
                     interim += alt.transcript;
                 }
 
-                console.log(finalChunk, "finalChunk");
-                console.log(interim, "interim");
+                if (process.env.NODE_ENV !== "production") {
+                    console.log(finalChunk, "finalChunk");
+                    console.log(interim, "interim");
+                }
             }
 
             setInterimText(interim || "");
@@ -224,6 +227,7 @@ export default function SpeechAIAssistant() {
                 finalizationTimerRef.current = setTimeout(() => {
                     if (isDuplicateFinal(clean)) return;
 
+                    // push the user message once here
                     setTranscript((prev) => [...prev, { role: "user", content: clean, ts: now() }]);
 
                     // Build complete text FIRST
@@ -231,7 +235,7 @@ export default function SpeechAIAssistant() {
                     setPendingFinalUser(completeText);
 
                     if (endsWithQuestion(completeText)) {
-                        void answerNow(completeText, true); // Now it gets the complete text
+                        void answerNow(completeText, true); // skipPush=true so we won't double-count
                     }
                 }, PAUSE_DELAY);
             }
@@ -273,7 +277,7 @@ export default function SpeechAIAssistant() {
             keepAliveRef.current = false;
             setIsListening(false);
         }
-    }, [ensureRecognizer, isListening]);
+    }, [ensureRecognizer, isListening, pendingFinalUser]);
 
     const stopListening = useCallback((hardAbort = false) => {
         const rec = recognitionRef.current;
@@ -293,6 +297,7 @@ export default function SpeechAIAssistant() {
         return () => {
             stopListening(true);
             aiAbortRef.current?.abort();
+            if (finalizationTimerRef.current) clearTimeout(finalizationTimerRef.current);
         };
     }, [stopListening]);
 
@@ -422,7 +427,7 @@ export default function SpeechAIAssistant() {
         []
     );
 
-    console.log(transcript, "transcript");
+    if (process.env.NODE_ENV !== "production") console.log(transcript, "transcript");
 
     /* ================== Answer Now (manual or auto) ================== */
     // skipPush: if true, do NOT add a user turn (used when we already pushed in onresult)
@@ -439,6 +444,7 @@ export default function SpeechAIAssistant() {
             if (!userText) return;
 
             if (!skipPush) {
+                // Manual trigger: push the user turn now
                 setTranscript((prev) => [...prev, { role: "user", content: userText, ts: now() }]);
             }
 
@@ -447,17 +453,16 @@ export default function SpeechAIAssistant() {
 
             const MAX_TURNS = 12;
             const base = transcript.filter((m) => m.role !== "system");
-
-            console.log(base, transcript, "base");
-
             const recent = base.slice(-MAX_TURNS);
+
+            // ✅ High: avoid duplicating the latest user content in messagesForAI when auto mode already pushed it
             const messagesForAI = [
                 { role: "system" as const, content: SYSTEM_PROMPT },
                 ...recent.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
-                { role: "user" as const, content: userText },
+                ...(!skipPush ? ([{ role: "user" as const, content: userText }] as const) : []),
             ];
 
-            console.log("Messages for AI:", messagesForAI);
+            if (process.env.NODE_ENV !== "production") console.log("Messages for AI:", messagesForAI);
 
             await streamAI(messagesForAI);
         },
@@ -511,6 +516,7 @@ export default function SpeechAIAssistant() {
                                 </div>
 
                                 <div className="prose prose-sm max-w-none dark:prose-invert">
+                                    {/* ✅ High: sanitize markdown */}
                                     <ReactMarkdown remarkPlugins={[remarkGfm]}>{t.content}</ReactMarkdown>
                                 </div>
                             </div>
@@ -528,7 +534,7 @@ export default function SpeechAIAssistant() {
                 </div>
 
                 {/* Sticky footer (BOTTOM): interim + controls */}
-                <div className="sticky bottom-0 bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60 rounded-md border p-3 space-y-3">
+                <div className="sticky bottom-0 bg-background/80 backdrop-blur rounded-md border p-3 space-y-3">
                     {/* Interim speech preview */}
                     <div className="text-sm text-muted-foreground min-h-5">
                         {isListening && interimText ? <em>Speaking: “{interimText}”</em> : null}
